@@ -1,5 +1,6 @@
 import { Innertube } from "youtubei.js";
 import type { TranscriptResult } from "@/types";
+import { getPoToken } from "./po-token";
 
 /**
  * Create a fresh Innertube instance each time.
@@ -7,6 +8,20 @@ import type { TranscriptResult } from "@/types";
  * across warm invocations, causing requests to hang silently.
  */
 async function getInnertube(): Promise<Innertube> {
+  const tokenResult = await getPoToken();
+
+  if (tokenResult) {
+    return Innertube.create({
+      lang: "en",
+      location: "US",
+      generate_session_locally: true,
+      po_token: tokenResult.poToken,
+      visitor_data: tokenResult.visitorData,
+    });
+  }
+
+  // Fallback: create without PO token (works from residential IPs)
+  console.warn("[youtube] No PO token available, creating session without it");
   return Innertube.create({
     lang: "en",
     location: "US",
@@ -106,17 +121,7 @@ export async function fetchTranscript(
   // Get caption tracks from player response
   const captionTracks = info.captions?.caption_tracks;
 
-  // --- DEBUG: log caption state to Vercel logs ---
-  console.log("[fetchTranscript] videoId:", videoId);
-  console.log("[fetchTranscript] title:", title);
-  console.log("[fetchTranscript] has captions obj:", !!info.captions);
-  console.log("[fetchTranscript] caption_tracks count:", captionTracks?.length ?? 0);
-  console.log("[fetchTranscript] streaming_data:", !!info.streaming_data);
-  console.log("[fetchTranscript] playability_status:", info.playability_status?.status);
-  if (captionTracks?.length) {
-    console.log("[fetchTranscript] tracks:", captionTracks.map((t) => `${t.language_code} (${t.kind ?? "manual"})`));
-  }
-  // --- END DEBUG ---
+  console.log(`[fetchTranscript] ${videoId} | playability=${info.playability_status?.status} | captions=${captionTracks?.length ?? 0}`);
 
   if (!captionTracks || captionTracks.length === 0) {
     throw new Error("No captions available for this video");
