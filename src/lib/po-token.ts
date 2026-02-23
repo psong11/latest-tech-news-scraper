@@ -1,5 +1,4 @@
 import { Innertube } from "youtubei.js";
-import { JSDOM } from "jsdom";
 import { BG } from "bgutils-js";
 
 interface CachedToken {
@@ -32,6 +31,9 @@ async function generatePoToken(): Promise<{ poToken: string; visitorData: string
   if (!visitorData) {
     throw new Error("Failed to get visitorData from Innertube session");
   }
+
+  // Dynamic import avoids bundling issues on Vercel (ESM/CJS compat)
+  const { JSDOM } = await import("jsdom");
 
   // JSDOM provides DOM objects that BotGuard scripts expect
   const dom = new JSDOM(
