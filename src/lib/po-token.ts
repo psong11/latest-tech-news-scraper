@@ -1,28 +1,84 @@
 import { Innertube } from "youtubei.js";
 import { JSDOM } from "jsdom";
 import { BG } from "bgutils-js";
+import type { WebPoSignalOutput, IntegrityTokenData } from "bgutils-js";
 
-interface CachedToken {
+export interface PoTokenResult {
   poToken: string;
   visitorData: string;
-  generatedAt: number;
+  mintContentToken: (videoId: string) => Promise<string>;
 }
 
-const TOKEN_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+interface CachedMinter {
+  minter: InstanceType<typeof BG.WebPoMinter>;
+  sessionToken: string;
+  visitorData: string;
+  generatedAt: number;
+  dom: JSDOM;
+  domGlobals: Record<string, unknown>;
+  savedDescriptors: Record<string, PropertyDescriptor | undefined>;
+  injectedKeys: string[];
+}
+
+const MINTER_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const REQUEST_KEY = "O43z0dpjhgX20SCx4KAo";
 
-let cachedToken: CachedToken | null = null;
+// Integrity token endpoint (same as bgutils-js internals)
+const GENERATE_IT_URL =
+  "https://jnn-pa.googleapis.com/$rpc/google.internal.waa.v1.Waa/GenerateIT";
+const IT_HEADERS = {
+  "content-type": "application/json+protobuf",
+  "x-goog-api-key": "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw",
+  "x-user-agent": "grpc-web-javascript/0.1",
+  "user-agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36(KHTML, like Gecko)",
+};
+
+let cachedMinter: CachedMinter | null = null;
 
 /**
- * Generate a fresh PO token using bgutils-js BotGuard challenge.
- *
- * BotGuard's VM must run in Node's global context so that functions it
- * produces pass `instanceof Function` checks in bgutils-js. We inject
- * JSDOM's DOM objects onto globalThis temporarily so the BotGuard
- * interpreter can access document/window/navigator.
+ * Temporarily inject JSDOM globals onto globalThis, run a callback,
+ * then restore the originals. BotGuard's VM closures reference `window`
+ * etc. on the global scope, so we must provide them during minting.
  */
-async function generatePoToken(): Promise<{ poToken: string; visitorData: string }> {
-  // Lightweight Innertube instance just to get visitorData
+async function withDomGlobals<T>(
+  cached: CachedMinter,
+  fn: () => Promise<T>
+): Promise<T> {
+  const globalObj = globalThis as Record<string, unknown>;
+
+  // Inject
+  for (const [key, value] of Object.entries(cached.domGlobals)) {
+    Object.defineProperty(globalObj, key, {
+      value,
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  try {
+    return await fn();
+  } finally {
+    // Restore originals
+    for (const key of cached.injectedKeys) {
+      const desc = cached.savedDescriptors[key];
+      if (desc) {
+        Object.defineProperty(globalObj, key, desc);
+      } else {
+        delete globalObj[key];
+      }
+    }
+  }
+}
+
+/**
+ * Run the full BotGuard challenge and create a WebPoMinter that can mint
+ * both session-bound and content-bound PO tokens.
+ *
+ * The minter is cached so we only run the expensive BotGuard challenge once.
+ * Individual tokens are cheap to mint (~1ms each).
+ */
+async function createMinter(): Promise<CachedMinter> {
   const yt = await Innertube.create({
     generate_session_locally: true,
     retrieve_player: false,
@@ -33,14 +89,12 @@ async function generatePoToken(): Promise<{ poToken: string; visitorData: string
     throw new Error("Failed to get visitorData from Innertube session");
   }
 
-  // JSDOM provides DOM objects for BotGuard script execution
   const dom = new JSDOM(
-    '<!DOCTYPE html><html><head></head><body></body></html>',
+    "<!DOCTYPE html><html><head></head><body></body></html>",
     { url: "https://www.youtube.com/", runScripts: "dangerously" }
   );
 
-  // Temporarily inject DOM globals so BotGuard script can access them.
-  // Some (like navigator) are read-only getters, so use defineProperty.
+  // Save original descriptors so we can restore them after each mint
   const globalObj = globalThis as Record<string, unknown>;
   const injectedKeys: string[] = [];
   const savedDescriptors: Record<string, PropertyDescriptor | undefined> = {};
@@ -73,22 +127,72 @@ async function generatePoToken(): Promise<{ poToken: string; visitorData: string
 
     const bgChallenge = await BG.Challenge.create(bgConfig);
 
-    if (!bgChallenge?.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue) {
+    if (
+      !bgChallenge?.interpreterJavascript
+        ?.privateDoNotAccessOrElseSafeScriptWrappedValue
+    ) {
       throw new Error("BotGuard challenge did not return interpreter script");
     }
 
     // Execute in Node's global context (not JSDOM's) so instanceof checks work
-    new Function(bgChallenge.interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue)();
+    new Function(
+      bgChallenge.interpreterJavascript
+        .privateDoNotAccessOrElseSafeScriptWrappedValue
+    )();
 
-    const poTokenResult = await BG.PoToken.generate({
+    // Replicate BG.PoToken.generate() internals but keep the WebPoMinter alive
+    // for per-video content-bound token minting.
+    const botguard = await BG.BotGuardClient.create({
       program: bgChallenge.program,
       globalName: bgChallenge.globalName,
-      bgConfig,
+      globalObj: bgConfig.globalObj,
     });
 
-    return { poToken: poTokenResult.poToken, visitorData };
+    const webPoSignalOutput: WebPoSignalOutput = [];
+    const botguardResponse = await botguard.snapshot({ webPoSignalOutput });
+
+    // Fetch integrity token from Google's WAA service
+    const itResponse = await fetch(GENERATE_IT_URL, {
+      method: "POST",
+      headers: IT_HEADERS,
+      body: JSON.stringify([REQUEST_KEY, botguardResponse]),
+    });
+
+    const itJson = await itResponse.json();
+    const [
+      integrityToken,
+      estimatedTtlSecs,
+      mintRefreshThreshold,
+      websafeFallbackToken,
+    ] = itJson;
+
+    const integrityTokenData: IntegrityTokenData = {
+      integrityToken,
+      estimatedTtlSecs,
+      mintRefreshThreshold,
+      websafeFallbackToken,
+    };
+
+    const minter = await BG.WebPoMinter.create(
+      integrityTokenData,
+      webPoSignalOutput
+    );
+
+    // Mint the session-bound token (bound to visitorData) while globals are up
+    const sessionToken = await minter.mintAsWebsafeString(visitorData);
+
+    return {
+      minter,
+      sessionToken,
+      visitorData,
+      generatedAt: Date.now(),
+      dom,
+      domGlobals,
+      savedDescriptors,
+      injectedKeys,
+    };
   } finally {
-    // Restore/clean up injected globals
+    // Restore globals — we'll re-inject them briefly for each mint call
     for (const key of injectedKeys) {
       const desc = savedDescriptors[key];
       if (desc) {
@@ -97,43 +201,73 @@ async function generatePoToken(): Promise<{ poToken: string; visitorData: string
         delete globalObj[key];
       }
     }
-    dom.window.close();
   }
 }
 
 /**
- * Get a PO token, using cache if still valid.
+ * Clean up a cached minter's JSDOM instance.
+ */
+function disposeMinter(cached: CachedMinter): void {
+  try {
+    cached.dom.window.close();
+  } catch {
+    // ignore cleanup errors
+  }
+}
+
+/**
+ * Get PO token capabilities, using cached minter if still valid.
+ *
+ * Returns:
+ * - poToken: session-bound token (for Innertube.create)
+ * - visitorData: visitor data (for Innertube.create)
+ * - mintContentToken(videoId): mint a content-bound token per video
+ *
  * Returns null on failure (graceful degradation).
  */
-export async function getPoToken(): Promise<{ poToken: string; visitorData: string } | null> {
-  // Return cached token if still valid
-  if (cachedToken && Date.now() - cachedToken.generatedAt < TOKEN_TTL_MS) {
-    console.log("[po-token] Using cached token");
-    return { poToken: cachedToken.poToken, visitorData: cachedToken.visitorData };
+export async function getPoToken(): Promise<PoTokenResult | null> {
+  if (cachedMinter && Date.now() - cachedMinter.generatedAt < MINTER_TTL_MS) {
+    console.log("[po-token] Using cached minter");
+    const cached = cachedMinter;
+    return {
+      poToken: cached.sessionToken,
+      visitorData: cached.visitorData,
+      mintContentToken: (id) =>
+        withDomGlobals(cached, () => cached.minter.mintAsWebsafeString(id)),
+    };
+  }
+
+  // Clean up old minter
+  if (cachedMinter) {
+    disposeMinter(cachedMinter);
+    cachedMinter = null;
   }
 
   try {
     const start = Date.now();
-    const result = await generatePoToken();
+    cachedMinter = await createMinter();
     const elapsed = Date.now() - start;
 
-    cachedToken = {
-      poToken: result.poToken,
-      visitorData: result.visitorData,
-      generatedAt: Date.now(),
+    console.log(`[po-token] Minter created in ${elapsed}ms`);
+    const cached = cachedMinter;
+    return {
+      poToken: cached.sessionToken,
+      visitorData: cached.visitorData,
+      mintContentToken: (id) =>
+        withDomGlobals(cached, () => cached.minter.mintAsWebsafeString(id)),
     };
-
-    console.log(`[po-token] Token generated in ${elapsed}ms`);
-    return result;
   } catch (error) {
-    console.error("[po-token] Failed to generate token:", error);
+    console.error("[po-token] Failed to create minter:", error);
     return null;
   }
 }
 
 /**
- * Clear the cached token (for testing).
+ * Clear the cached minter (for testing).
  */
 export function clearPoTokenCache(): void {
-  cachedToken = null;
+  if (cachedMinter) {
+    disposeMinter(cachedMinter);
+    cachedMinter = null;
+  }
 }
