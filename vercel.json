@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "src/app/api/summarize/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}
