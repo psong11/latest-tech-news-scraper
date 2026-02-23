@@ -1,4 +1,5 @@
 import { Innertube } from "youtubei.js";
+import { JSDOM } from "jsdom";
 import { BG } from "bgutils-js";
 
 interface CachedToken {
@@ -15,10 +16,10 @@ let cachedToken: CachedToken | null = null;
 /**
  * Generate a fresh PO token using bgutils-js BotGuard challenge.
  *
- * BotGuard's VM must run in Node's global context (not JSDOM's) so that
- * functions it produces pass `instanceof Function` checks in bgutils-js.
- * We inject JSDOM's DOM objects onto globalThis temporarily so the
- * BotGuard interpreter can access document/window/navigator.
+ * BotGuard's VM must run in Node's global context so that functions it
+ * produces pass `instanceof Function` checks in bgutils-js. We inject
+ * JSDOM's DOM objects onto globalThis temporarily so the BotGuard
+ * interpreter can access document/window/navigator.
  */
 async function generatePoToken(): Promise<{ poToken: string; visitorData: string }> {
   // Lightweight Innertube instance just to get visitorData
@@ -32,10 +33,7 @@ async function generatePoToken(): Promise<{ poToken: string; visitorData: string
     throw new Error("Failed to get visitorData from Innertube session");
   }
 
-  // Dynamic import avoids bundling issues on Vercel (ESM/CJS compat)
-  const { JSDOM } = await import("jsdom");
-
-  // JSDOM provides DOM objects that BotGuard scripts expect
+  // JSDOM provides DOM objects for BotGuard script execution
   const dom = new JSDOM(
     '<!DOCTYPE html><html><head></head><body></body></html>',
     { url: "https://www.youtube.com/", runScripts: "dangerously" }
