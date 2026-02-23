@@ -106,6 +106,18 @@ export async function fetchTranscript(
   // Get caption tracks from player response
   const captionTracks = info.captions?.caption_tracks;
 
+  // --- DEBUG: log caption state to Vercel logs ---
+  console.log("[fetchTranscript] videoId:", videoId);
+  console.log("[fetchTranscript] title:", title);
+  console.log("[fetchTranscript] has captions obj:", !!info.captions);
+  console.log("[fetchTranscript] caption_tracks count:", captionTracks?.length ?? 0);
+  console.log("[fetchTranscript] streaming_data:", !!info.streaming_data);
+  console.log("[fetchTranscript] playability_status:", info.playability_status?.status);
+  if (captionTracks?.length) {
+    console.log("[fetchTranscript] tracks:", captionTracks.map((t) => `${t.language_code} (${t.kind ?? "manual"})`));
+  }
+  // --- END DEBUG ---
+
   if (!captionTracks || captionTracks.length === 0) {
     throw new Error("No captions available for this video");
   }
