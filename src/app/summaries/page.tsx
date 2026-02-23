@@ -1,31 +1,22 @@
 import { Suspense } from "react";
-import { SummaryStream } from "@/components/summary-stream";
 import { SummaryList } from "@/components/summary-list";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export const dynamic = "force-dynamic";
 
-export default function HomePage() {
+export default function SummariesPage() {
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">
-          AI News Video Summarizer
-        </h1>
+        <h1 className="text-3xl font-bold tracking-tight">Summary History</h1>
         <p className="mt-2 text-muted-foreground">
-          Paste a YouTube video URL and get a structured summary powered by
-          Claude.
+          Browse all past video summaries.
         </p>
       </div>
 
-      <SummaryStream />
-
-      <div>
-        <h2 className="mb-4 text-xl font-semibold">Recent Summaries</h2>
-        <Suspense fallback={<SummaryListSkeleton />}>
-          <SummaryList limit={5} />
-        </Suspense>
-      </div>
+      <Suspense fallback={<SummaryListSkeleton />}>
+        <SummaryList />
+      </Suspense>
     </div>
   );
 }
@@ -33,7 +24,7 @@ export default function HomePage() {
 function SummaryListSkeleton() {
   return (
     <div className="space-y-3">
-      {[1, 2, 3].map((i) => (
+      {[1, 2, 3, 4, 5].map((i) => (
         <div key={i} className="flex gap-4 rounded-lg border p-4">
           <Skeleton className="h-24 w-40 rounded-md" />
           <div className="flex-1 space-y-2">
