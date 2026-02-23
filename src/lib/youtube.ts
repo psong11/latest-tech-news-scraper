@@ -1,17 +1,17 @@
 import { Innertube } from "youtubei.js";
 import type { TranscriptResult } from "@/types";
 
-let innertube: Innertube | null = null;
-
+/**
+ * Create a fresh Innertube instance each time.
+ * Do NOT cache — on Vercel serverless, cached sessions go stale
+ * across warm invocations, causing requests to hang silently.
+ */
 async function getInnertube(): Promise<Innertube> {
-  if (!innertube) {
-    innertube = await Innertube.create({
-      lang: "en",
-      location: "US",
-      generate_session_locally: true,
-    });
-  }
-  return innertube;
+  return Innertube.create({
+    lang: "en",
+    location: "US",
+    generate_session_locally: true,
+  });
 }
 
 export function extractYouTubeId(url: string): string | null {
@@ -62,11 +62,27 @@ function parseJson3ToText(json3: string): string {
   return textParts.join(" ");
 }
 
+const YOUTUBE_TIMEOUT_MS = 15_000;
+
+/**
+ * Race a promise against a timeout. Rejects with a clear message if the
+ * timeout fires first.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 export async function fetchTranscript(
   videoId: string
 ): Promise<TranscriptResult> {
-  const yt = await getInnertube();
-  const info = await yt.getInfo(videoId);
+  const yt = await withTimeout(getInnertube(), YOUTUBE_TIMEOUT_MS, "YouTube session creation");
+  const info = await withTimeout(yt.getInfo(videoId), YOUTUBE_TIMEOUT_MS, "YouTube video info fetch");
 
   const title = info.basic_info.title ?? "Unknown Title";
   const channel = info.basic_info.channel?.name ?? "Unknown Channel";
@@ -111,7 +127,7 @@ export async function fetchTranscript(
   const captionUrl = new URL(selectedTrack.base_url);
   captionUrl.searchParams.set("fmt", "json3");
 
-  const response = await yt.session.http.fetch(captionUrl);
+  const response = await withTimeout(yt.session.http.fetch(captionUrl), YOUTUBE_TIMEOUT_MS, "Caption fetch");
   const json3Text = await response.text();
 
   if (!json3Text || json3Text.length === 0) {
