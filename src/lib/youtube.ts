@@ -1,43 +1,24 @@
 import { Innertube } from "youtubei.js";
 import type { TranscriptResult } from "@/types";
-import { getPoToken } from "./po-token";
-
-interface InnertubeWithMinter {
-  yt: Innertube;
-  mintContentToken?: (videoId: string) => Promise<string>;
-}
+import { getProxyFetch } from "./proxy-fetch";
 
 /**
  * Create a fresh Innertube instance each time.
  * Do NOT cache — on Vercel serverless, cached sessions go stale
  * across warm invocations, causing requests to hang silently.
  *
- * Returns both the Innertube instance and optionally a function to mint
- * content-bound PO tokens per video (needed for /player requests from
- * datacenter IPs).
+ * If PROXY_URL is set, routes requests through a residential proxy
+ * to avoid datacenter IP blocks from YouTube.
  */
-async function getInnertube(): Promise<InnertubeWithMinter> {
-  const tokenResult = await getPoToken();
+async function getInnertube(): Promise<Innertube> {
+  const proxyFetch = getProxyFetch();
 
-  if (tokenResult) {
-    const yt = await Innertube.create({
-      lang: "en",
-      location: "US",
-      generate_session_locally: true,
-      po_token: tokenResult.poToken,
-      visitor_data: tokenResult.visitorData,
-    });
-    return { yt, mintContentToken: tokenResult.mintContentToken };
-  }
-
-  // Fallback: create without PO token (works from residential IPs)
-  console.warn("[youtube] No PO token available, creating session without it");
-  const yt = await Innertube.create({
+  return Innertube.create({
     lang: "en",
     location: "US",
     generate_session_locally: true,
+    ...(proxyFetch ? { fetch: proxyFetch } : {}),
   });
-  return { yt };
 }
 
 export function extractYouTubeId(url: string): string | null {
@@ -107,23 +88,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function fetchTranscript(
   videoId: string
 ): Promise<TranscriptResult> {
-  const { yt, mintContentToken } = await withTimeout(getInnertube(), YOUTUBE_TIMEOUT_MS, "YouTube session creation");
-
-  // Mint a content-bound PO token for this specific video.
-  // YouTube's /player endpoint requires tokens bound to the video ID,
-  // not just session-bound tokens.
-  let contentToken: string | undefined;
-  if (mintContentToken) {
-    try {
-      contentToken = await mintContentToken(videoId);
-      console.log(`[fetchTranscript] Minted content-bound token for ${videoId}`);
-    } catch (e) {
-      console.warn("[fetchTranscript] Content token mint failed, using session token:", e);
-    }
-  }
+  const yt = await withTimeout(getInnertube(), YOUTUBE_TIMEOUT_MS, "YouTube session creation");
 
   const info = await withTimeout(
-    yt.getInfo(videoId, contentToken ? { po_token: contentToken } : undefined),
+    yt.getInfo(videoId),
     YOUTUBE_TIMEOUT_MS,
     "YouTube video info fetch"
   );
