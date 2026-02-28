@@ -18,9 +18,31 @@ export function getProxyFetch(): typeof globalThis.fetch | undefined {
 
   const agent = new ProxyAgent(proxyUrl);
 
-  return ((input: RequestInfo | URL, init?: RequestInit) =>
-    undiciFetch(input as Parameters<typeof undiciFetch>[0], {
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    // youtubei.js passes Request objects, but undici's fetch uses a
+    // different Request class and stringifies ours to "[object Request]".
+    // Unwrap to a plain URL + init so undici can handle it.
+    let url: string | URL;
+    let mergedInit: Record<string, unknown> = {
       ...(init as Record<string, unknown>),
       dispatcher: agent,
-    }) as unknown as Promise<Response>) as typeof globalThis.fetch;
+    };
+
+    if (input instanceof Request) {
+      url = input.url;
+      mergedInit = {
+        method: input.method,
+        headers: input.headers,
+        body: input.body,
+        ...mergedInit,
+      };
+    } else {
+      url = input;
+    }
+
+    return undiciFetch(
+      url as Parameters<typeof undiciFetch>[0],
+      mergedInit,
+    ) as unknown as Promise<Response>;
+  }) as typeof globalThis.fetch;
 }
