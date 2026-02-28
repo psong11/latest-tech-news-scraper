@@ -88,13 +88,25 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function fetchTranscript(
   videoId: string
 ): Promise<TranscriptResult> {
-  const yt = await withTimeout(getInnertube(), YOUTUBE_TIMEOUT_MS, "YouTube session creation");
+  let yt: Innertube;
+  try {
+    yt = await withTimeout(getInnertube(), YOUTUBE_TIMEOUT_MS, "YouTube session creation");
+  } catch (err) {
+    console.error("[fetchTranscript] Innertube creation failed:", err);
+    throw err;
+  }
 
-  const info = await withTimeout(
-    yt.getInfo(videoId),
-    YOUTUBE_TIMEOUT_MS,
-    "YouTube video info fetch"
-  );
+  let info;
+  try {
+    info = await withTimeout(
+      yt.getInfo(videoId),
+      YOUTUBE_TIMEOUT_MS,
+      "YouTube video info fetch"
+    );
+  } catch (err) {
+    console.error(`[fetchTranscript] getInfo(${videoId}) failed:`, err);
+    throw err;
+  }
 
   const title = info.basic_info.title ?? "Unknown Title";
   const channel = info.basic_info.channel?.name ?? "Unknown Channel";

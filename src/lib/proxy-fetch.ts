@@ -7,7 +7,14 @@ import { ProxyAgent, fetch as undiciFetch } from "undici";
  */
 export function getProxyFetch(): typeof globalThis.fetch | undefined {
   const proxyUrl = process.env.PROXY_URL;
-  if (!proxyUrl) return undefined;
+  if (!proxyUrl) {
+    console.log("[proxy-fetch] No PROXY_URL set, using direct connection");
+    return undefined;
+  }
+
+  // Log redacted proxy URL for debugging
+  const redacted = proxyUrl.replace(/:([^@]+)@/, ":***@");
+  console.log(`[proxy-fetch] Using proxy: ${redacted}`);
 
   const agent = new ProxyAgent(proxyUrl);
 
