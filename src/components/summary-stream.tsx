@@ -103,6 +103,7 @@ export function SummaryStream({ onComplete }: { onComplete?: () => void }) {
 
         const decoder = new TextDecoder();
         let buffer = "";
+        let eventType = "";
 
         while (true) {
           const { done, value } = await reader.read();
@@ -111,8 +112,6 @@ export function SummaryStream({ onComplete }: { onComplete?: () => void }) {
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n");
           buffer = lines.pop() || "";
-
-          let eventType = "";
           for (const line of lines) {
             if (line.startsWith("event: ")) {
               eventType = line.slice(7);
